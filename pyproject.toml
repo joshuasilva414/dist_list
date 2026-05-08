@@ -1,7 +1,7 @@
 [project]
 name = "dist-list"
 version = "0.1.0"
-description = "Add your description here"
+description = "Operating Systems project demonstrating distributed systems and concurrent programming synchronization mechanisms"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []
