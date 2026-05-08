@@ -1,5 +1,5 @@
 from multiprocessing import Process
-from socket import socket
+import socket
 from client import client
 from protocol import send_command, command_shutdown
 from server import server

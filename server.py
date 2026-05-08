@@ -1,6 +1,6 @@
 import socket
 from shared import L
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 from protocol import recv_command, send_response, Response, Operation, Command
 
 shared_list = L.copy()
@@ -43,19 +43,38 @@ def handle_command(id: int, command: Command) -> Response:
     )
 
 
-def handle_connection(conn: socket.socket, addr: tuple[str, int]):
+def handle_connection(
+    server_id: int,
+    conn: socket.socket,
+    addr: tuple[str, int],
+    shutdown_event: Event,
+    debug: bool = False,
+):
+    def log(message: str) -> None:
+        if debug:
+            print(f"[server {server_id}]: {message}")
+
     with conn:
+        log(f"connection made from {addr}")
         while True:
-            command = recv_command(conn)
-            if command.operation == Operation.SHUTDOWN:
+            try:
+                command = recv_command(conn)
+            except ConnectionError:
                 break
-            else:
-                with lock:
-                    shared_list.append(command.value)
-                    send_response(
-                        conn,
-                        Response(ok=True, request_id=command.request_id, server_id=id),
-                    )
+            if command.operation == Operation.SHUTDOWN:
+                shutdown_event.set()
+                send_response(
+                    conn,
+                    Response(
+                        request_id=command.request_id,
+                        ok=True,
+                        result=True,
+                        server_id=server_id,
+                    ),
+                )
+                break
+            response = handle_command(server_id, command)
+            send_response(conn, response)
 
 
 def server(id, port, debug=False):
@@ -66,20 +85,28 @@ def server(id, port, debug=False):
     log(f"starting on port {port}")
     # start server
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(("localhost", port))
         s.listen()
         log(f"listening on localhost:{port}")
-        while True:
-            conn, addr = s.accept()
-            t = Thread(target=handle_connection, args=(conn, addr))
+        shutdown_event = Event()
+        threads: list[Thread] = []
+        s.settimeout(0.5)
+
+        while not shutdown_event.is_set():
+            try:
+                conn, addr = s.accept()
+            except socket.timeout:
+                continue
+
+            t = Thread(
+                target=handle_connection,
+                args=(id, conn, addr, shutdown_event, debug),
+                daemon=True,
+            )
+            threads.append(t)
             t.start()
-            log(f"connection made from {addr}")
-            command = recv_command(conn)
-            if command.operation == Operation.SHUTDOWN:
-                log("shutting down")
-                break
-            else:
-                log(f"received command: {command}")
-                send_response(
-                    conn, Response(ok=True, request_id=command.request_id, server_id=id)
-                )
+
+        log("shutting down")
+        for t in threads:
+            t.join(timeout=1.0)
