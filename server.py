@@ -76,7 +76,7 @@ def server(id, port, debug=False):
             log(f"connection made from {addr}")
             command = recv_command(conn)
             if command.operation == Operation.SHUTDOWN:
-                log(f"shutting down")
+                log("shutting down")
                 break
             else:
                 log(f"received command: {command}")

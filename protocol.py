@@ -4,7 +4,7 @@ import json
 import random
 import socket
 import struct
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 from shared import L

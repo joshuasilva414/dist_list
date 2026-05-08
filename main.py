@@ -1,8 +1,7 @@
-from multiprocessing import Process, process
+from multiprocessing import Process
 from socket import socket
-import sys
 from client import client
-from protocol import send_command, command_shutdown, Operation
+from protocol import send_command, command_shutdown
 from server import server
 import argparse
 from utils import find_free_port
@@ -50,10 +49,10 @@ def main():
         c.join()
 
     for s in servers:
-        port, process = s
-        conn = socket.create_connection(("localhost", port))
-        send_command(conn, command_shutdown())
-        process.join()
+        port, server_process = s
+        with socket.create_connection(("localhost", port)) as conn:
+            send_command(conn, command_shutdown())
+        server_process.join()
 
 
 if __name__ == "__main__":

@@ -1,4 +1,3 @@
-import random
 import socket
 
 from protocol import recv_response, send_command, command_random
