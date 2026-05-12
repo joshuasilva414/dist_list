@@ -22,3 +22,10 @@ Optional flags: `--num-servers`, `--num-clients`, `--operations`(number of opera
 python3 main.py --num-servers 3 --num-clients 3 --operations 50 --debug
 ```
 
+## Help
+
+AI helped troubleshoot synchronization issues and developing a plan for implementation.
+
+## Assignment Feedback
+
+- Very helpful to learn about distributed systems and synchronization.
