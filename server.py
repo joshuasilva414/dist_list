@@ -1,7 +1,10 @@
 import socket
-from shared import L
 from threading import Event, Lock, Thread
-from protocol import recv_command, send_response, Response, Operation, Command
+
+from cluster_config import ServerClusterConfig
+from coordinator import wait_for_peer_map
+from protocol import Command, Operation, Response, recv_command, send_response
+from shared import L
 
 shared_list = L.copy()
 lock = Lock()
@@ -77,18 +80,21 @@ def handle_connection(
             send_response(conn, response)
 
 
-def server(id, port, debug=False):
+def server(server_id: int, cluster: ServerClusterConfig, debug: bool = False):
     def log(message):
         if debug:
-            print(f"[server {id}]: {message}")
+            print(f"[server {server_id}]: {message}")
 
-    log(f"starting on port {port}")
-    # start server
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind(("localhost", port))
+        s.bind(("0.0.0.0", 0))
+        listen_port = int(s.getsockname()[1])
         s.listen()
-        log(f"listening on localhost:{port}")
+        log(
+            f"listening on 0.0.0.0:{listen_port} (advertise {cluster.advertise_host}:{listen_port} to peers)"
+        )
+        peers = wait_for_peer_map(cluster, server_id, listen_port)
+        log(f"cluster membership ready: {peers}")
         shutdown_event = Event()
         threads: list[Thread] = []
         s.settimeout(0.5)
@@ -101,7 +107,7 @@ def server(id, port, debug=False):
 
             t = Thread(
                 target=handle_connection,
-                args=(id, conn, addr, shutdown_event, debug),
+                args=(server_id, conn, addr, shutdown_event, debug),
                 daemon=True,
             )
             threads.append(t)

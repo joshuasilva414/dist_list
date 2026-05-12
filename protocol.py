@@ -199,6 +199,15 @@ def recv_response(sock: socket.socket) -> Response:
     return Response.from_dict(_recv_json(sock))
 
 
+def send_json_payload(sock: socket.socket, payload: dict[str, Any]) -> None:
+    """Length-prefixed JSON for non-command/control peers (e.g. coordinator)."""
+    _send_json(sock, payload)
+
+
+def recv_json_payload(sock: socket.socket) -> dict[str, Any]:
+    return _recv_json(sock)
+
+
 def append(client_id: int, request_id: int, value: int) -> Command:
     return Command(
         client_id=client_id,
