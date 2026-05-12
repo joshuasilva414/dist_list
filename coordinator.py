@@ -1,8 +1,3 @@
-"""
-Lightweight membership coordinator: replicas register ephemeral listen ports
-and poll for the full peer map before forming a mesh.
-"""
-
 from __future__ import annotations
 
 import json
@@ -113,7 +108,6 @@ def run_coordinator(
 def fetch_cluster_members(
     cluster: ServerClusterConfig,
 ) -> tuple[dict[int, tuple[str, int]], bool]:
-    """Ask the coordinator for the current membership snapshot (no register)."""
     with socket.create_connection(
         (cluster.coordinator_host, cluster.coordinator_port)
     ) as s:
@@ -153,10 +147,6 @@ def wait_for_peer_map(
     listen_port: int,
     poll_interval_s: float = 0.05,
 ) -> dict[int, tuple[str, int]]:
-    """
-    Register this server's listen address, then poll until the coordinator
-    reports at least expected_servers registrations (lab: distinct server_ids).
-    """
     while True:
         peers, ready = register_with_coordinator(cluster, server_id, listen_port)
         if ready and len(peers) >= cluster.expected_servers:

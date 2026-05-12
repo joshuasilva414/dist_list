@@ -1,5 +1,3 @@
-"""Shared cluster layout; safe for ``multiprocessing`` pickling (no sockets)."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass

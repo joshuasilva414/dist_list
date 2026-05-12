@@ -79,12 +79,9 @@ def _peer_reader_loop(
             try:
                 msg = recv_json_payload_or_none(conn)
             except (ConnectionError, OSError, ValueError) as e:
-                # Mid-message disconnect or malformed frame — genuinely
-                # unexpected, log it.
                 log(f"peer link error: {e}")
                 break
             if msg is None:
-                # Clean half-close from peer: graceful teardown, stay silent.
                 break
             kind = msg.get("kind")
             if kind == "replica_update":
@@ -94,8 +91,6 @@ def _peer_reader_loop(
             else:
                 log(f"unexpected replica message {kind!r}")
     finally:
-        # Unregister before close so ``close_peer_links`` never observes a stale
-        # socket entry whose fd another thread already fully closed (EBADF).
         opq.unregister_peer_socket(peer_id)
         try:
             conn.close()
@@ -124,8 +119,6 @@ def _mesh_connector(
                 log(f"connect to {peer_id} at {host}:{port} failed ({e}), retrying")
                 time.sleep(0.05)
                 continue
-            # Connect timeout sticks on the socket; clear it so the reader
-            # blocks indefinitely on recv instead of dying after 2s of silence.
             conn.settimeout(None)
             try:
                 send_json_payload(
@@ -293,10 +286,14 @@ def server(server_id: int, cluster: ServerClusterConfig, debug: bool = False):
             t.start()
 
         log("shutting down")
-        # Send FIN to every peer first so their reader threads exit cleanly
-        # instead of tripping the "Socket closed while receiving data" path
-        # when our process eventually exits and the OS closes the fds.
         opq.close_peer_links()
         opq.stop()
         for t in threads:
             t.join(timeout=1.0)
+        opq.join_delivery()
+        with lock:
+            final = list(shared_list)
+        print(
+            f"[server {server_id}] final list ({len(final)} elements): {final}",
+            flush=True,
+        )

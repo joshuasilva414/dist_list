@@ -23,20 +23,10 @@ class Operation(StrEnum):
 
 @dataclass(frozen=True)
 class Command:
-    """
-    Represents one client request to the server.
-
-    Examples:
-        Command(client_id=1, operation=Operation.APPEND, value=10)
-        Command(client_id=2, operation=Operation.GET, index=3)
-        Command(client_id=3, operation=Operation.PRINT)
-    """
-
     client_id: int
     operation: Operation
     request_id: int
 
-    # Optional arguments depending on operation
     value: int | None = None
     index: int | None = None
 
@@ -86,17 +76,6 @@ class Command:
 
 @dataclass(frozen=True)
 class Response:
-    """
-    Represents one server response.
-
-    result can be:
-        - bool
-        - int
-        - list[int]
-        - str
-        - None
-    """
-
     request_id: int
     ok: bool
     result: Any = None
@@ -132,14 +111,6 @@ _MAX_MESSAGE_SIZE = 1_000_000
 
 
 def _send_json(sock: socket.socket, payload: dict[str, Any]) -> None:
-    """
-    Sends one JSON message using this format:
-
-        [4-byte unsigned message length][JSON bytes]
-
-    The 4-byte length is stored in network byte order.
-    """
-
     data = json.dumps(payload).encode("utf-8")
 
     if len(data) > _MAX_MESSAGE_SIZE:
@@ -150,13 +121,6 @@ def _send_json(sock: socket.socket, payload: dict[str, Any]) -> None:
 
 
 def _recv_exactly(sock: socket.socket, n: int) -> bytes:
-    """
-    Reads exactly n bytes from a socket.
-
-    TCP does not preserve message boundaries, so a single recv()
-    is not guaranteed to return the full message.
-    """
-
     chunks: list[bytes] = []
     bytes_remaining = n
 
@@ -200,7 +164,6 @@ def recv_response(sock: socket.socket) -> Response:
 
 
 def send_json_payload(sock: socket.socket, payload: dict[str, Any]) -> None:
-    """Length-prefixed JSON for non-command/control peers (e.g. coordinator)."""
     _send_json(sock, payload)
 
 
@@ -209,13 +172,6 @@ def recv_json_payload(sock: socket.socket) -> dict[str, Any]:
 
 
 def recv_json_payload_or_none(sock: socket.socket) -> dict[str, Any] | None:
-    """Length-prefixed recv that returns ``None`` on a clean half-close at a
-    message boundary (peer sent FIN with no partial frame in flight) and raises
-    only on genuine errors (mid-message EOF, oversize frame, malformed JSON,
-    underlying socket error).
-
-    Use this on long-lived peer links where the peer may gracefully shut down
-    its write side as part of teardown."""
     first = sock.recv(_HEADER_SIZE)
     if not first:
         return None
@@ -294,7 +250,6 @@ def command_length(client_id: int, request_id: int) -> Command:
 def command_random(client_id: int, request_id: int) -> Command:
     return random.choice(
         [
-            # command_append(client_id, request_id, len(L)),
             command_remove(client_id, request_id, random.choice(L)),
             command_get(client_id, request_id, random.randint(0, len(L) - 1)),
             command_contains(client_id, request_id, random.choice(L)),
