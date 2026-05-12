@@ -8,7 +8,16 @@ from operations_queue import (
     KIND_REPLICA_HELLO,
     OperationsQueue,
 )
-from protocol import Command, Operation, Response, recv_command, recv_json_payload, send_json_payload, send_response
+from protocol import (
+    Command,
+    Operation,
+    Response,
+    recv_command,
+    recv_json_payload,
+    recv_json_payload_or_none,
+    send_json_payload,
+    send_response,
+)
 from shared import L
 
 shared_list = L.copy()
@@ -65,12 +74,17 @@ def _peer_reader_loop(
         if debug:
             print(f"[server {server_id} peer {peer_id}]: {message}")
 
-    with conn:
+    try:
         while not shutdown_event.is_set():
             try:
-                msg = recv_json_payload(conn)
+                msg = recv_json_payload_or_none(conn)
             except (ConnectionError, OSError, ValueError) as e:
-                log(f"peer recv ended: {e}")
+                # Mid-message disconnect or malformed frame — genuinely
+                # unexpected, log it.
+                log(f"peer link error: {e}")
+                break
+            if msg is None:
+                # Clean half-close from peer: graceful teardown, stay silent.
                 break
             kind = msg.get("kind")
             if kind == "replica_update":
@@ -79,7 +93,14 @@ def _peer_reader_loop(
                 opq.on_replica_ack(msg)
             else:
                 log(f"unexpected replica message {kind!r}")
-    opq.unregister_peer_socket(peer_id)
+    finally:
+        # Unregister before close so ``close_peer_links`` never observes a stale
+        # socket entry whose fd another thread already fully closed (EBADF).
+        opq.unregister_peer_socket(peer_id)
+        try:
+            conn.close()
+        except OSError:
+            pass
 
 
 def _mesh_connector(
@@ -272,5 +293,10 @@ def server(server_id: int, cluster: ServerClusterConfig, debug: bool = False):
             t.start()
 
         log("shutting down")
+        # Send FIN to every peer first so their reader threads exit cleanly
+        # instead of tripping the "Socket closed while receiving data" path
+        # when our process eventually exits and the OS closes the fds.
+        opq.close_peer_links()
+        opq.stop()
         for t in threads:
             t.join(timeout=1.0)

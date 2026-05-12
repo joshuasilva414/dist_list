@@ -18,6 +18,7 @@ Wire kinds:
 
 from __future__ import annotations
 
+import errno
 import heapq
 import socket
 import threading
@@ -132,6 +133,28 @@ class OperationsQueue:
             self._peer_sockets.pop(peer_id, None)
             self._peer_send_locks.pop(peer_id, None)
         self._log(f"unregistered peer {peer_id}")
+
+    def close_peer_links(self) -> None:
+        """Half-close the write side of every registered peer socket so each
+        peer's reader sees a clean FIN at its next ``recv``. This lets the
+        cluster wind down without anyone going through the
+        ``ConnectionError`` / "Socket closed while receiving data" path."""
+        with self._peer_lock:
+            targets = list(self._peer_sockets.items())
+        for peer_id, conn in targets:
+            try:
+                conn.shutdown(socket.SHUT_WR)
+            except OSError as e:
+                # Another thread may have closed the fd right after our snapshot,
+                # or shutdown may be redundant once the endpoint is disconnected.
+                if e.errno in {
+                    errno.EBADF,
+                    errno.ENOTCONN,
+                    errno.EINVAL,
+                    errno.ECONNRESET,
+                }:
+                    continue
+                self._log(f"shutdown(SHUT_WR) on peer {peer_id} failed: {e}")
 
     def _multicast(self, payload: dict[str, Any]) -> None:
         """Send ``payload`` to every peer we currently have a link to."""

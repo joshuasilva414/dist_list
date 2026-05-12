@@ -208,6 +208,28 @@ def recv_json_payload(sock: socket.socket) -> dict[str, Any]:
     return _recv_json(sock)
 
 
+def recv_json_payload_or_none(sock: socket.socket) -> dict[str, Any] | None:
+    """Length-prefixed recv that returns ``None`` on a clean half-close at a
+    message boundary (peer sent FIN with no partial frame in flight) and raises
+    only on genuine errors (mid-message EOF, oversize frame, malformed JSON,
+    underlying socket error).
+
+    Use this on long-lived peer links where the peer may gracefully shut down
+    its write side as part of teardown."""
+    first = sock.recv(_HEADER_SIZE)
+    if not first:
+        return None
+    if len(first) < _HEADER_SIZE:
+        first += _recv_exactly(sock, _HEADER_SIZE - len(first))
+    message_size = struct.unpack("!I", first)[0]
+
+    if message_size > _MAX_MESSAGE_SIZE:
+        raise ValueError(f"Incoming message too large: {message_size} bytes")
+
+    data = _recv_exactly(sock, message_size)
+    return json.loads(data.decode("utf-8"))
+
+
 def append(client_id: int, request_id: int, value: int) -> Command:
     return Command(
         client_id=client_id,
