@@ -8,7 +8,13 @@ from multiprocessing import Process, Queue
 from cluster_config import ServerClusterConfig
 from client import client
 from coordinator import fetch_cluster_members, run_coordinator
-from protocol import command_shutdown, send_command
+from protocol import (
+    Command,
+    Operation,
+    command_shutdown,
+    recv_response,
+    send_command,
+)
 from server import server
 
 NUM_SERVERS = 3
@@ -74,6 +80,8 @@ def main():
     for c in clients:
         c.join()
 
+    verify_replica_convergence(members)
+
     for sid in sorted(members.keys()):
         host, port = members[sid]
         with socket.create_connection((host, port)) as conn:
@@ -81,6 +89,60 @@ def main():
 
     for p in servers:
         p.join()
+
+
+def verify_replica_convergence(members: dict[int, tuple[str, int]]) -> None:
+    """Drive a barrier mutation through every server, then snapshot each
+    replica's list and assert they are identical.
+
+    The barriers serve as global synchronization points: by the time a server
+    finishes ``submit_local_mutation`` for its barrier, total-order delivery
+    guarantees that every prior mutation (with a smaller Lamport timestamp)
+    has already been applied on that server. Issuing one barrier per replica
+    in sequence makes every replica catch up before we read.
+    """
+    for sid in sorted(members.keys()):
+        host, port = members[sid]
+        with socket.create_connection((host, port)) as conn:
+            send_command(
+                conn,
+                Command(
+                    client_id=10_000 + sid,
+                    request_id=0,
+                    operation=Operation.APPEND,
+                    value=f"__BARRIER_{sid}__",
+                ),
+            )
+            recv_response(conn)
+
+    snapshots: dict[int, list] = {}
+    for sid in sorted(members.keys()):
+        host, port = members[sid]
+        with socket.create_connection((host, port)) as conn:
+            send_command(
+                conn,
+                Command(
+                    client_id=20_000 + sid,
+                    request_id=0,
+                    operation=Operation.PRINT,
+                ),
+            )
+            resp = recv_response(conn)
+        snapshots[sid] = resp.result or []
+
+    distinct = {tuple(s) for s in snapshots.values()}
+    if len(distinct) == 1:
+        size = len(next(iter(distinct)))
+        print(
+            f"[verify] PASS: all {len(snapshots)} replicas converged "
+            f"({size} elements)"
+        )
+        return
+
+    print(f"[verify] FAIL: replicas diverged across {len(distinct)} distinct snapshots")
+    for sid, snap in snapshots.items():
+        print(f"  server {sid} ({len(snap)} elements): {snap}")
+    raise SystemExit(1)
 
 
 if __name__ == "__main__":

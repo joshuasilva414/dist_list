@@ -1,9 +1,14 @@
 import socket
+import time
 from threading import Event, Lock, Thread
 
 from cluster_config import ServerClusterConfig
 from coordinator import wait_for_peer_map
-from protocol import Command, Operation, Response, recv_command, send_response
+from operations_queue import (
+    KIND_REPLICA_HELLO,
+    OperationsQueue,
+)
+from protocol import Command, Operation, Response, recv_command, recv_json_payload, send_json_payload, send_response
 from shared import L
 
 shared_list = L.copy()
@@ -12,12 +17,14 @@ lock = Lock()
 
 def handle_command(id: int, command: Command) -> Response:
     with lock:
-        if command.operation == Operation.APPEND:
-            shared_list.append(command.value)
-
-            return Response(command.request_id, True, result=True, server_id=id)
-
         if command.operation == Operation.GET:
+            if command.index is None or not (0 <= command.index < len(shared_list)):
+                return Response(
+                    command.request_id,
+                    True,
+                    result=None,
+                    server_id=id,
+                )
             return Response(
                 command.request_id,
                 True,
@@ -46,11 +53,86 @@ def handle_command(id: int, command: Command) -> Response:
     )
 
 
-def handle_connection(
+def _peer_reader_loop(
+    server_id: int,
+    opq: OperationsQueue,
+    peer_id: int,
+    conn: socket.socket,
+    shutdown_event: Event,
+    debug: bool,
+):
+    def log(message: str) -> None:
+        if debug:
+            print(f"[server {server_id} peer {peer_id}]: {message}")
+
+    with conn:
+        while not shutdown_event.is_set():
+            try:
+                msg = recv_json_payload(conn)
+            except (ConnectionError, OSError, ValueError) as e:
+                log(f"peer recv ended: {e}")
+                break
+            kind = msg.get("kind")
+            if kind == "replica_update":
+                opq.on_replica_update(msg)
+            elif kind == "replica_ack":
+                opq.on_replica_ack(msg)
+            else:
+                log(f"unexpected replica message {kind!r}")
+    opq.unregister_peer_socket(peer_id)
+
+
+def _mesh_connector(
+    server_id: int,
+    peers: dict[int, tuple[str, int]],
+    opq: OperationsQueue,
+    shutdown_event: Event,
+    debug: bool,
+):
+    def log(message: str) -> None:
+        if debug:
+            print(f"[server {server_id} mesh]: {message}")
+
+    for peer_id, (host, port) in sorted(peers.items()):
+        if peer_id <= server_id:
+            continue
+        while not shutdown_event.is_set():
+            try:
+                conn = socket.create_connection((host, port), timeout=2.0)
+            except OSError as e:
+                log(f"connect to {peer_id} at {host}:{port} failed ({e}), retrying")
+                time.sleep(0.05)
+                continue
+            # Connect timeout sticks on the socket; clear it so the reader
+            # blocks indefinitely on recv instead of dying after 2s of silence.
+            conn.settimeout(None)
+            try:
+                send_json_payload(
+                    conn,
+                    {"kind": KIND_REPLICA_HELLO, "server_id": server_id},
+                )
+            except OSError as e:
+                log(f"hello to {peer_id} failed: {e}")
+                conn.close()
+                time.sleep(0.05)
+                continue
+            opq.register_peer_socket(peer_id, conn)
+            Thread(
+                target=_peer_reader_loop,
+                args=(server_id, opq, peer_id, conn, shutdown_event, debug),
+                daemon=True,
+            ).start()
+            log(f"outbound link ready to {peer_id}")
+            break
+
+
+def _handle_client_session(
     server_id: int,
     conn: socket.socket,
     addr: tuple[str, int],
     shutdown_event: Event,
+    opq: OperationsQueue,
+    first_command: Command,
     debug: bool = False,
 ):
     def log(message: str) -> None:
@@ -58,32 +140,86 @@ def handle_connection(
             print(f"[server {server_id}]: {message}")
 
     with conn:
-        log(f"connection made from {addr}")
+        log(f"client session from {addr}")
+        command = first_command
         while True:
             try:
+                if command.operation == Operation.SHUTDOWN:
+                    shutdown_event.set()
+                    send_response(
+                        conn,
+                        Response(
+                            request_id=command.request_id,
+                            ok=True,
+                            result=True,
+                            server_id=server_id,
+                        ),
+                    )
+                    break
+                if opq.is_mutation(command.operation):
+                    response = opq.submit_local_mutation(command)
+                else:
+                    response = handle_command(server_id, command)
+                send_response(conn, response)
                 command = recv_command(conn)
             except ConnectionError:
                 break
-            if command.operation == Operation.SHUTDOWN:
-                shutdown_event.set()
-                send_response(
-                    conn,
-                    Response(
-                        request_id=command.request_id,
-                        ok=True,
-                        result=True,
-                        server_id=server_id,
-                    ),
-                )
-                break
-            response = handle_command(server_id, command)
-            send_response(conn, response)
+
+
+def _dispatch_incoming(
+    server_id: int,
+    conn: socket.socket,
+    addr: tuple[str, int],
+    shutdown_event: Event,
+    opq: OperationsQueue,
+    debug: bool,
+):
+    def log(message: str) -> None:
+        if debug:
+            print(f"[server {server_id}]: {message}")
+
+    try:
+        first = recv_json_payload(conn)
+    except (ConnectionError, OSError, ValueError) as e:
+        log(f"first message failed from {addr}: {e}")
+        conn.close()
+        return
+
+    kind = first.get("kind")
+    if kind == KIND_REPLICA_HELLO:
+        peer_id = int(first["server_id"])
+        opq.register_peer_socket(peer_id, conn)
+        Thread(
+            target=_peer_reader_loop,
+            args=(server_id, opq, peer_id, conn, shutdown_event, debug),
+            daemon=True,
+        ).start()
+        if debug:
+            print(f"[server {server_id}]: inbound replica {peer_id} from {addr}")
+        return
+
+    if kind == "command":
+        cmd = Command.from_dict(first)
+        _handle_client_session(server_id, conn, addr, shutdown_event, opq, cmd, debug)
+        return
+
+    log(f"unknown first message kind {kind!r} from {addr}")
+    conn.close()
 
 
 def server(server_id: int, cluster: ServerClusterConfig, debug: bool = False):
-    def log(message):
+    def log(message: str) -> None:
         if debug:
             print(f"[server {server_id}]: {message}")
+
+    opq = OperationsQueue(
+        server_id,
+        cluster.expected_servers,
+        shared_list,
+        lock,
+        debug=debug,
+    )
+    opq.start()
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -95,19 +231,41 @@ def server(server_id: int, cluster: ServerClusterConfig, debug: bool = False):
         )
         peers = wait_for_peer_map(cluster, server_id, listen_port)
         log(f"cluster membership ready: {peers}")
+
+        others = {k: v for k, v in peers.items() if k != server_id}
         shutdown_event = Event()
         threads: list[Thread] = []
-        s.settimeout(0.5)
+
+        Thread(
+            target=_mesh_connector,
+            args=(server_id, others, opq, shutdown_event, debug),
+            daemon=True,
+        ).start()
+
+        need_peer_links = len(others)
+        mesh_logged = False
+        s.settimeout(0.05)
 
         while not shutdown_event.is_set():
+            if (
+                not mesh_logged
+                and need_peer_links > 0
+                and opq.peer_link_count() >= need_peer_links
+            ):
+                log(f"replica mesh ready ({opq.peer_link_count()} peer links)")
+                mesh_logged = True
+            if need_peer_links == 0 and not mesh_logged:
+                log("replica mesh ready (standalone)")
+                mesh_logged = True
+
             try:
                 conn, addr = s.accept()
             except socket.timeout:
                 continue
 
             t = Thread(
-                target=handle_connection,
-                args=(server_id, conn, addr, shutdown_event, debug),
+                target=_dispatch_incoming,
+                args=(server_id, conn, addr, shutdown_event, opq, debug),
                 daemon=True,
             )
             threads.append(t)
