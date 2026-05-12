@@ -1,4 +1,5 @@
 import socket
+import sys
 import time
 from threading import Event, Lock, Thread
 
@@ -22,6 +23,24 @@ from shared import L
 
 shared_list = L.copy()
 lock = Lock()
+
+
+def _print_final_list(words: list) -> None:
+    """Same output on every server: indexed line then sentence line.
+
+    Emitted as one write so each process does not split labels and bodies across
+    multiple flushed prints (which could interleave with other servers mid-report).
+    """
+    indexed = " ".join(f"{i}:{w}" for i, w in enumerate(words))
+    sentence = " ".join(str(w) for w in words)
+    block = (
+        "Indexed format:\n\n"
+        f"{indexed}\n\n"
+        "Sentence format:\n\n"
+        f"{sentence}\n\n"
+    )
+    sys.stdout.write(block)
+    sys.stdout.flush()
 
 
 def handle_command(id: int, command: Command) -> Response:
@@ -208,8 +227,7 @@ def _dispatch_incoming(
             args=(server_id, opq, peer_id, conn, shutdown_event, debug),
             daemon=True,
         ).start()
-        if debug:
-            print(f"[server {server_id}]: inbound replica {peer_id} from {addr}")
+        log(f"inbound replica {peer_id} from {addr}")
         return
 
     if kind == "command":
@@ -293,7 +311,4 @@ def server(server_id: int, cluster: ServerClusterConfig, debug: bool = False):
         opq.join_delivery()
         with lock:
             final = list(shared_list)
-        print(
-            f"[server {server_id}] final list ({len(final)} elements): {final}",
-            flush=True,
-        )
+        _print_final_list(final)

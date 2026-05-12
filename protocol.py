@@ -12,6 +12,8 @@ from shared import L
 
 class Operation(StrEnum):
     APPEND = "append"
+    INSERT = "insert"
+    REPLACE = "replace"
     REMOVE = "remove"
     GET = "get"
     CONTAINS = "contains"
@@ -27,7 +29,7 @@ class Command:
     operation: Operation
     request_id: int
 
-    value: int | None = None
+    value: str | None = None
     index: int | None = None
 
     def validate(self) -> None:
@@ -37,7 +39,17 @@ class Command:
         if self.request_id < 0:
             raise ValueError("request_id must be non-negative")
 
-        if self.operation in {Operation.APPEND, Operation.REMOVE, Operation.CONTAINS}:
+        if self.operation in {
+            Operation.APPEND,
+            Operation.REMOVE,
+            Operation.CONTAINS,
+        }:
+            if self.value is None:
+                raise ValueError(f"{self.operation} requires value")
+
+        if self.operation in {Operation.INSERT, Operation.REPLACE}:
+            if self.index is None:
+                raise ValueError(f"{self.operation} requires index")
             if self.value is None:
                 raise ValueError(f"{self.operation} requires value")
 
@@ -62,12 +74,17 @@ class Command:
         if data.get("kind") != "command":
             raise ValueError("Message is not a command")
 
+        raw_val = data.get("value")
+        val = None if raw_val is None else str(raw_val)
+        raw_idx = data.get("index")
+        idx = None if raw_idx is None else int(raw_idx)
+
         command = Command(
             client_id=int(data["client_id"]),
             request_id=int(data["request_id"]),
             operation=Operation(data["operation"]),
-            value=data.get("value"),
-            index=data.get("index"),
+            value=val,
+            index=idx,
         )
 
         command.validate()
@@ -186,7 +203,7 @@ def recv_json_payload_or_none(sock: socket.socket) -> dict[str, Any] | None:
     return json.loads(data.decode("utf-8"))
 
 
-def append(client_id: int, request_id: int, value: int) -> Command:
+def append(client_id: int, request_id: int, value: str) -> Command:
     return Command(
         client_id=client_id,
         request_id=request_id,
@@ -195,7 +212,27 @@ def append(client_id: int, request_id: int, value: int) -> Command:
     )
 
 
-def command_remove(client_id: int, request_id: int, value: int) -> Command:
+def command_insert(client_id: int, request_id: int, index: int, value: str) -> Command:
+    return Command(
+        client_id=client_id,
+        request_id=request_id,
+        operation=Operation.INSERT,
+        index=index,
+        value=value,
+    )
+
+
+def command_replace(client_id: int, request_id: int, index: int, value: str) -> Command:
+    return Command(
+        client_id=client_id,
+        request_id=request_id,
+        operation=Operation.REPLACE,
+        index=index,
+        value=value,
+    )
+
+
+def command_remove(client_id: int, request_id: int, value: str) -> Command:
     return Command(
         client_id=client_id,
         request_id=request_id,
@@ -213,7 +250,7 @@ def command_get(client_id: int, request_id: int, index: int) -> Command:
     )
 
 
-def command_contains(client_id: int, request_id: int, value: int) -> Command:
+def command_contains(client_id: int, request_id: int, value: str) -> Command:
     return Command(
         client_id=client_id,
         request_id=request_id,
@@ -248,15 +285,25 @@ def command_length(client_id: int, request_id: int) -> Command:
 
 
 def command_random(client_id: int, request_id: int) -> Command:
-    return random.choice(
-        [
-            command_remove(client_id, request_id, random.choice(L)),
-            command_get(client_id, request_id, random.randint(0, len(L) - 1)),
-            command_contains(client_id, request_id, random.choice(L)),
-            command_pop(client_id, request_id, random.randint(0, len(L) - 1)),
-            command_print(client_id, request_id),
-        ]
-    )
+    """Weighted mix: 40% insert, 30% delete (pop), 20% replace, 10% append."""
+    pool = L
+    span = max(len(pool) * 4, 8)
+    kind = random.choices(
+        ("insert", "delete", "replace", "append"),
+        weights=[40, 30, 20, 10],
+        k=1,
+    )[0]
+    word = random.choice(pool)
+    if kind == "insert":
+        idx = random.randint(0, span)
+        return command_insert(client_id, request_id, idx, word)
+    if kind == "delete":
+        idx = random.randint(0, span - 1)
+        return command_pop(client_id, request_id, idx)
+    if kind == "replace":
+        idx = random.randint(0, span - 1)
+        return command_replace(client_id, request_id, idx, word)
+    return append(client_id, request_id, word)
 
 
 def command_shutdown(client_id: int = 0, request_id: int = 0) -> Command:

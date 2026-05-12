@@ -15,7 +15,13 @@ KIND_REPLICA_UPDATE = "replica_update"
 KIND_REPLICA_ACK = "replica_ack"
 
 _MUTATION_OPS: frozenset[Operation] = frozenset(
-    {Operation.APPEND, Operation.REMOVE, Operation.POP}
+    {
+        Operation.APPEND,
+        Operation.INSERT,
+        Operation.REPLACE,
+        Operation.REMOVE,
+        Operation.POP,
+    }
 )
 
 
@@ -244,8 +250,22 @@ class OperationsQueue:
         op = command.operation
         try:
             if op == Operation.APPEND:
+                assert command.value is not None
                 self.shared_list.append(command.value)
                 result: Any = True
+            elif op == Operation.INSERT:
+                assert command.index is not None and command.value is not None
+                pos = max(0, min(command.index, len(self.shared_list)))
+                self.shared_list.insert(pos, command.value)
+                result = True
+            elif op == Operation.REPLACE:
+                assert command.index is not None and command.value is not None
+                idx = command.index
+                if not (0 <= idx < len(self.shared_list)):
+                    result = False
+                else:
+                    self.shared_list[idx] = command.value
+                    result = True
             elif op == Operation.REMOVE:
                 try:
                     self.shared_list.remove(command.value)

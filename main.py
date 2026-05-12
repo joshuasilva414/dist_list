@@ -17,7 +17,6 @@ from server import server
 NUM_SERVERS = 3
 NUM_CLIENTS = 3
 OPERATIONS = 50
-DEBUG = True
 
 
 def main():
